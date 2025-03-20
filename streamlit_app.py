@@ -613,7 +613,6 @@ if uploaded_file is not None:
     if 'assignments' not in st.session_state:
         assignments = {}
         slot_mappings = {}
-        total_stats = st.session_state.total_stats
         total_stats['total'].clear()
         total_stats['early'].clear()
         total_stats['late'].clear()
