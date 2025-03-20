@@ -613,59 +613,6 @@ if uploaded_file is not None:
     for room in total_stats['rooms']:
         total_stats['rooms'][room].clear()
 
-    # Sheet1_data 순회 및 배정
-    assignments = {}
-    fixed_assignments = {}
-    for date in sorted(Sheet1_data.keys()):  # 날짜 정렬
-        personnel_sheet1 = Sheet1_data[date]['personnel']
-        day_of_week = Sheet1_data[date]['day']
-        memos = Sheet1_data[date]['memos']
-        
-        # Sheet2 고정 배정 준비
-        fixed_assignments[date] = {}
-        if date in Sheet2_data:
-            for row in Sheet2.iter_rows(min_row=2):
-                sheet2_date = row[0].value
-                if sheet2_date:
-                    if isinstance(sheet2_date, datetime):
-                        date_str = sheet2_date.strftime('%Y-%m-%d')
-                    else:
-                        date_str_raw = str(sheet2_date).strip()
-                        try:
-                            if "월" in date_str_raw and "일" in date_str_raw:
-                                month, day = date_str_raw.replace("월", "").replace("일", "").split()
-                                year = datetime.today().year
-                                date = datetime.strptime(f"{year}-{month}-{day}", "%Y-%m-%d").date()
-                                date_str = date.strftime('%Y-%m-%d')
-                            else:
-                                date = datetime.strptime(date_str_raw, '%Y-%m-%d').date()
-                                date_str = date.strftime('%Y-%m-%d')
-                        except ValueError:
-                            continue
-                    if date_str == date:
-                        headers = Sheet2_data[date]['headers']
-                        for col_idx, cell in enumerate(row[2:], 2):
-                            if cell.value:
-                                slot_key = headers[col_idx]
-                                person = cell.value
-                                name_counts = Counter([p.split('_')[0] for p in personnel_sheet1])
-                                name_counts[person] += 1
-                                suffix = f"_{name_counts[person]}" if name_counts[person] > 1 else ""
-                                fixed_person = f"{person}{suffix}"
-                                fixed_assignments[date][fixed_person] = slot_key
-
-        # Sheet1과 Sheet2 인원 통합
-        personnel = personnel_sheet1.copy()
-        for person in fixed_assignments[date].keys():
-            if person not in personnel:
-                personnel.append(person)
-        
-        assigned_slots = slot_mappings.get(date, weekday_slots)
-        assignment, fixed_assignments_record, memo_assignments = random_assign(
-            personnel, assigned_slots, fixed_assignments, memos, day_of_week, time_groups, total_stats, current_date=date
-        )
-        assignments[date] = assignment
-
     # 파일 변경 감지 및 세션 초기화
     file_hash = hash(uploaded_file.getvalue())
     if 'last_file_hash' not in st.session_state or st.session_state.last_file_hash != file_hash:
@@ -962,8 +909,8 @@ if uploaded_file is not None:
     st.dataframe(result_df)
 
     # "재랜덤화" 버튼
-    if st.button("재랜덤화"):
-        st.session_state.clear()
+    if st.button("재랜덤화", key="rerandomize_button"):
+        st.session_state.pop('assignments', None)  # assignments만 제거
         st.session_state.last_file_hash = file_hash
         st.rerun()
 
