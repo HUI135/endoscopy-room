@@ -603,16 +603,6 @@ if uploaded_file is not None:
         }
     total_stats = st.session_state.total_stats
 
-    # total_stats 초기화 (세션 상태가 변경될 때마다 초기화)
-    total_stats['total'].clear()
-    total_stats['early'].clear()
-    total_stats['late'].clear()
-    total_stats['duty'].clear()
-    for slot in total_stats['slots']:
-        total_stats['slots'][slot].clear()
-    for room in total_stats['rooms']:
-        total_stats['rooms'][room].clear()
-
     # 파일 변경 감지 및 세션 초기화
     file_hash = hash(uploaded_file.getvalue())
     if 'last_file_hash' not in st.session_state or st.session_state.last_file_hash != file_hash:
@@ -623,17 +613,18 @@ if uploaded_file is not None:
     if 'assignments' not in st.session_state:
         assignments = {}
         slot_mappings = {}
-        total_stats = {
-            'total': Counter(), 
-            'early': Counter(), 
-            'late': Counter(), 
-            'duty': Counter(), 
-            'rooms': {str(i): Counter() for i in range(1, 13)},
-            'slots': {slot.replace('_당직', ''): Counter() for slot in time_slots.keys() if slot != '온콜'}
-        }
+        total_stats = st.session_state.total_stats
+        total_stats['total'].clear()
+        total_stats['early'].clear()
+        total_stats['late'].clear()
+        total_stats['duty'].clear()
+        for slot in total_stats['slots']:
+            total_stats['slots'][slot].clear()
+        for room in total_stats['rooms']:
+            total_stats['rooms'][room].clear()
         total_fixed_stats = {slot: Counter() for slot in time_slots.keys()}
         total_memo_stats = {slot: Counter() for slot in time_slots.keys()}
-
+        
         for date, data in sorted(Sheet1_data.items()):  # 날짜 정렬
             personnel = data['personnel']
             original_personnel = data['original_personnel']
