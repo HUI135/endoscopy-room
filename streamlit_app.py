@@ -150,8 +150,8 @@ if uploaded_file is not None:
                     date_obj = datetime.strptime(date, '%Y-%m-%d')
                     formatted_date = date_obj.strftime('%m월 %d일')
                     mismatch_warnings.append(
-                        f"Sheet1의 {formatted_date}에는 '{person}'이 없음에도, Sheet2의 {formatted_date}에 '{person}'이 '{slot}'에 배치되어 있습니다. "
-                        f"이 경우 {formatted_date}의 Sheet1 인원이 완전히 배치되지 않을 수 있습니다."
+                        f"Sheet1의 {formatted_date}에는 '{person}'이 없음에도, Sheet2의 {formatted_date}에 '{person}'이 '{slot}'에 수동 배치되어 있습니다. "
+                        f"이 경우 {formatted_date}의 Sheet2 수동 배치 사항이 무시됩니다.."
                     )
 
     # 경고 메시지 출력
@@ -258,10 +258,13 @@ if uploaded_file is not None:
         early_slots = ['8:30(1)_당직', '8:30(2)', '8:30(4)', '8:30(7)']
         late_slots = ['10:00(9)', '10:00(3)']
         
+        total_personnel_count = sum(Counter(personnel).values())  # 모든 인원의 총 배정 횟수
+        
         best_assignment = None
         best_fixed_assignments_record = None
         best_memo_assignments = None
-        min_violations = float('inf')
+        min_unassigned = float('inf')  # 미배정 인원 수 최소화
+        min_violations = float('inf')  # 제약 조건 위반 최소화
         best_total_early = total_stats['early'].copy()
         best_total_late = total_stats['late'].copy()
         best_total_duty = total_stats['duty'].copy()
@@ -271,9 +274,9 @@ if uploaded_file is not None:
         for attempt in range(max_attempts):
             assignment = [None] * len(slots)
             fixed_personnel = set()
-            assigned_counts = Counter()
-            personnel_counts = Counter(personnel)
-            assigned_by_time = {time_group: set() for time_group in time_groups.keys()}
+            assigned_counts = Counter()  # 배정 횟수 추적
+            personnel_counts = Counter(personnel)  # Sheet1과 Sheet2 인원 합계
+            assigned_by_original_time = {time_group: set() for time_group in time_groups.keys()}  # original_name 기준 중복 방지
             fixed_assignments_record = {}
             memo_assignments = {}
             
@@ -282,7 +285,7 @@ if uploaded_file is not None:
             total_duty = total_stats['duty'].copy()
             total_rooms = {str(i): total_stats['rooms'][str(i)].copy() for i in range(1, 13)}
             
-            # 고정 배치 적용
+            # 고정 배치 적용 (Sheet2)
             for date, assignments in fixed_assignments.items():
                 if date == current_date:
                     for person, fixed_slot in assignments.items():
@@ -290,22 +293,21 @@ if uploaded_file is not None:
                             slot_idx = slots.index(fixed_slot)
                             original_name = person.split('_')[0]
                             time_group = next(t for t, g in time_groups.items() if fixed_slot in g)
-                            if person in assigned_by_time[time_group]:
-                                continue  # 중복 배정 방지
-                            assignment[slot_idx] = person
-                            fixed_personnel.add(person)
-                            assigned_counts[person] += 1
-                            fixed_assignments_record.setdefault(fixed_slot, Counter())[person] += 1
-                            assigned_by_time[time_group].add(person)
-                            if fixed_slot in early_slots and day_of_week != '토요일':
-                                total_early[original_name] += 1
-                            if fixed_slot in late_slots and day_of_week != '토요일':
-                                total_late[original_name] += 1
-                            if fixed_slot in duty_slots and day_of_week != '토요일':
-                                total_duty[original_name] += 1
-                            room_num = re.search(r'\((\d+)\)', fixed_slot)
-                            if room_num and day_of_week != '토요일':
-                                total_rooms[room_num.group(1)][original_name] += 1
+                            if original_name not in assigned_by_original_time[time_group]:
+                                assignment[slot_idx] = person
+                                fixed_personnel.add(person)
+                                assigned_counts[person] += 1
+                                fixed_assignments_record.setdefault(fixed_slot, Counter())[person] += 1
+                                assigned_by_original_time[time_group].add(original_name)
+                                if fixed_slot in early_slots and day_of_week != '토요일':
+                                    total_early[original_name] += 1
+                                if fixed_slot in late_slots and day_of_week != '토요일':
+                                    total_late[original_name] += 1
+                                if fixed_slot in duty_slots and day_of_week != '토요일':
+                                    total_duty[original_name] += 1
+                                room_num = re.search(r'\((\d+)\)', fixed_slot)
+                                if room_num and day_of_week != '토요일':
+                                    total_rooms[room_num.group(1)][original_name] += 1
 
             # 메모 기반 우선 배치
             all_slots = set(slots)
@@ -329,10 +331,7 @@ if uploaded_file is not None:
                     i for i in remaining_slots 
                     if slots[i] in allowed_slots 
                     and assigned_counts[person] < personnel_counts[person]
-                    and person not in assigned_by_time.get(next(t for t, g in time_groups.items() if slots[i] in g), set())
-                    and total_early[original_name] < MAX_EARLY
-                    and total_late[original_name] < MAX_LATE
-                    and total_duty[original_name] < MAX_DUTY
+                    and original_name not in assigned_by_original_time.get(next(t for t, g in time_groups.items() if slots[i] in g), set())
                 ]
                 if valid_slots:
                     slot_idx = random.choice(valid_slots)
@@ -340,9 +339,8 @@ if uploaded_file is not None:
                     assigned_counts[person] += 1
                     memo_assignments.setdefault(slots[slot_idx], Counter())[person] += 1
                     remaining_slots.remove(slot_idx)
-                    for time_group, group in time_groups.items():
-                        if slots[slot_idx] in group:
-                            assigned_by_time[time_group].add(person)
+                    time_group = next(t for t, g in time_groups.items() if slots[slot_idx] in g)
+                    assigned_by_original_time[time_group].add(original_name)
                     if slots[slot_idx] in early_slots and day_of_week != '토요일':
                         total_early[original_name] += 1
                     if slots[slot_idx] in late_slots and day_of_week != '토요일':
@@ -362,12 +360,11 @@ if uploaded_file is not None:
                 time_group = next(t for t, g in time_groups.items() if slots[slot_idx] in g)
                 for person in personnel_list:
                     original_name = person.split('_')[0]
-                    if (person not in assigned_by_time[time_group] and 
-                        assigned_counts[person] < personnel_counts[person] and
-                        total_duty[original_name] < MAX_DUTY):
+                    if (original_name not in assigned_by_original_time[time_group] and 
+                        assigned_counts[person] < personnel_counts[person]):
                         assignment[slot_idx] = person
                         assigned_counts[person] += 1
-                        assigned_by_time[time_group].add(person)
+                        assigned_by_original_time[time_group].add(original_name)
                         if day_of_week != '토요일':
                             total_duty[original_name] += 1
                             total_early[original_name] += 1
@@ -385,12 +382,11 @@ if uploaded_file is not None:
                 time_group = next(t for t, g in time_groups.items() if slots[slot_idx] in g)
                 for person in personnel_list:
                     original_name = person.split('_')[0]
-                    if (person not in assigned_by_time[time_group] and 
-                        assigned_counts[person] < personnel_counts[person] and
-                        total_early[original_name] < MAX_EARLY):
+                    if (original_name not in assigned_by_original_time[time_group] and 
+                        assigned_counts[person] < personnel_counts[person]):
                         assignment[slot_idx] = person
                         assigned_counts[person] += 1
-                        assigned_by_time[time_group].add(person)
+                        assigned_by_original_time[time_group].add(original_name)
                         if day_of_week != '토요일':
                             total_early[original_name] += 1
                         room_num = re.search(r'\((\d+)\)', slots[slot_idx])
@@ -407,12 +403,11 @@ if uploaded_file is not None:
                 time_group = next(t for t, g in time_groups.items() if slots[slot_idx] in g)
                 for person in personnel_list:
                     original_name = person.split('_')[0]
-                    if (person not in assigned_by_time[time_group] and 
-                        assigned_counts[person] < personnel_counts[person] and
-                        total_late[original_name] < MAX_LATE):
+                    if (original_name not in assigned_by_original_time[time_group] and 
+                        assigned_counts[person] < personnel_counts[person]):
                         assignment[slot_idx] = person
                         assigned_counts[person] += 1
-                        assigned_by_time[time_group].add(person)
+                        assigned_by_original_time[time_group].add(original_name)
                         if day_of_week != '토요일':
                             total_late[original_name] += 1
                         room_num = re.search(r'\((\d+)\)', slots[slot_idx])
@@ -426,23 +421,28 @@ if uploaded_file is not None:
             available_slots = [i for i, slot in enumerate(slots) if assignment[i] is None]
             personnel_list = [p for p in personnel if assigned_counts[p] < personnel_counts[p]]
             random.shuffle(personnel_list)
-            assignment, available_slots = assign_remaining(assignment, personnel_list, available_slots, slots, assigned_counts, personnel_counts, time_groups, assigned_by_time, total_early, total_late, total_duty, total_rooms, MAX_EARLY, MAX_LATE, MAX_DUTY, MAX_ROOM, day_of_week)
+            assignment, available_slots = assign_remaining(
+                assignment, personnel_list, available_slots, slots, assigned_counts, 
+                personnel_counts, time_groups, assigned_by_original_time, total_early, 
+                total_late, total_duty, total_rooms, MAX_EARLY, MAX_LATE, MAX_DUTY, 
+                MAX_ROOM, day_of_week
+            )
 
-            # 강제 배정
-            if available_slots:
+            # 강제 배정 (모든 인원 배정 보장)
+            if available_slots and personnel_list:
                 personnel_list = sorted(
                     personnel_list,
                     key=lambda p: (total_duty[p.split('_')[0]], total_early[p.split('_')[0]], total_late[p.split('_')[0]], sum(total_rooms[r][p.split('_')[0]] for r in total_rooms))
                 )
-                for slot_idx in available_slots:
+                for slot_idx in available_slots[:len(personnel_list)]:  # 남은 인원 수만큼만 배정 시도
                     time_group = next(t for t, g in time_groups.items() if slots[slot_idx] in g)
                     for person in personnel_list:
                         original_name = person.split('_')[0]
                         if (assigned_counts[person] < personnel_counts[person] and 
-                            person not in assigned_by_time[time_group]):
+                            original_name not in assigned_by_original_time[time_group]):
                             assignment[slot_idx] = person
                             assigned_counts[person] += 1
-                            assigned_by_time[time_group].add(person)
+                            assigned_by_original_time[time_group].add(original_name)
                             if slots[slot_idx] in early_slots and day_of_week != '토요일':
                                 total_early[original_name] += 1
                             if slots[slot_idx] in late_slots and day_of_week != '토요일':
@@ -453,8 +453,12 @@ if uploaded_file is not None:
                             if room_num and day_of_week != '토요일':
                                 total_rooms[room_num.group(1)][original_name] += 1
                             available_slots.remove(slot_idx)
+                            personnel_list = [p for p in personnel_list if assigned_counts[p] < personnel_counts[p]]
                             break
 
+            # 미배정 인원 계산
+            unassigned_count = sum(personnel_counts[p] - assigned_counts[p] for p in personnel_counts if personnel_counts[p] > assigned_counts[p])
+            
             # 통계 계산 및 위반 확인
             stats, early_count, late_count, duty_count, slot_counts = calculate_stats(assignment, slots, day_of_week)
             temp_total_early = total_stats['early'].copy()
@@ -472,7 +476,9 @@ if uploaded_file is not None:
 
             violations = count_violations(temp_total_early, temp_total_late, temp_total_duty, temp_total_slots)
 
-            if violations < min_violations:
+            # 모든 인원이 배정된 경우에만 결과 저장, 그중 위반 최소화
+            if unassigned_count < min_unassigned or (unassigned_count == min_unassigned and violations < min_violations):
+                min_unassigned = unassigned_count
                 min_violations = violations
                 best_assignment = assignment.copy()
                 best_fixed_assignments_record = fixed_assignments_record.copy()
@@ -482,7 +488,7 @@ if uploaded_file is not None:
                 best_total_duty = temp_total_duty.copy()
                 best_total_slots = {slot: temp_total_slots[slot].copy() for slot in temp_total_slots}
                 best_total_stats = temp_total_stats.copy()
-                if min_violations == 0:
+                if min_unassigned == 0:  # 모든 인원이 배정되면 종료
                     break
 
         if best_assignment is not None:
@@ -491,8 +497,12 @@ if uploaded_file is not None:
             total_stats['duty'] = best_total_duty
             total_stats['slots'] = best_total_slots
             total_stats['total'] = best_total_stats
+            # 미배정 인원이 있을 때만 경고 출력
+            if min_unassigned > 0:
+                unassigned = {p: personnel_counts[p] - Counter(best_assignment)[p] for p in personnel_counts if personnel_counts[p] > Counter(best_assignment)[p]}
             return best_assignment, best_fixed_assignments_record, best_memo_assignments
         
+        # 최후의 경우 (최적 결과 없음)
         stats, early_count, late_count, duty_count, slot_counts = calculate_stats(assignment, slots, day_of_week)
         total_stats['early'].update(early_count)
         total_stats['late'].update(late_count)
@@ -500,9 +510,13 @@ if uploaded_file is not None:
         for slot in slot_counts:
             total_stats['slots'][slot].update(slot_counts[slot])
         total_stats['total'].update(stats)
+        unassigned_count = sum(personnel_counts[p] - assigned_counts[p] for p in personnel_counts if personnel_counts[p] > assigned_counts[p])
+        if unassigned_count > 0:
+            unassigned = {p: personnel_counts[p] - assigned_counts[p] for p in personnel_counts if personnel_counts[p] > assigned_counts[p]}
+            st.warning(f"{current_date}: {unassigned_count}명의 인원이 배정되지 않았습니다. 배정되지 않은 인원: {unassigned}")
         return assignment, fixed_assignments_record, memo_assignments
-
-    def assign_remaining(assignment, personnel_list, available_slots, slots, assigned_counts, personnel_counts, time_groups, assigned_by_time, total_early, total_late, total_duty, total_rooms, MAX_EARLY, MAX_LATE, MAX_DUTY, MAX_ROOM, day_of_week):
+        
+    def assign_remaining(assignment, personnel_list, available_slots, slots, assigned_counts, personnel_counts, time_groups, assigned_by_original_time, total_early, total_late, total_duty, total_rooms, MAX_EARLY, MAX_LATE, MAX_DUTY, MAX_ROOM, day_of_week):
         random.shuffle(personnel_list)
         for person in personnel_list:
             if available_slots:
@@ -512,36 +526,15 @@ if uploaded_file is not None:
                 for slot_idx in available_slots:
                     slot = slots[slot_idx]
                     time_group = next(t for t, g in time_groups.items() if slot in g)
-                    if person not in assigned_by_time[time_group]:
-                        early_ok = (total_early[original_name] + (1 if slot in {'8:30(1)_당직', '8:30(2)', '8:30(4)', '8:30(7)'} else 0)) <= MAX_EARLY or day_of_week == '토요일'
-                        late_ok = (total_late[original_name] + (1 if slot in {'10:00(9)', '10:00(3)'} else 0)) <= MAX_LATE or day_of_week == '토요일'
-                        duty_ok = (total_duty[original_name] + (1 if slot in {'8:30(1)_당직', '13:30(3)_당직'} else 0)) <= MAX_DUTY or day_of_week == '토요일'
-                        room_num = re.search(r'\((\d+)\)', slot)
-                        room_ok = True
-                        if room_num:
-                            room = room_num.group(1)
-                            room_ok = (total_rooms[room][original_name] + 1) <= MAX_ROOM or day_of_week == '토요일'
-                            if not room_ok and (day_of_week != '토요일' or time_group != '9:00'):
-                                group = next(g for t, g in time_groups.items() if slot in g)
-                                alt_slots = [s for s in group if s != slot and s in slots and slots.index(s) in available_slots]
-                                for alt_slot in alt_slots:
-                                    alt_idx = slots.index(alt_slot)
-                                    alt_room_num = re.search(r'\((\d+)\)', alt_slot)
-                                    if alt_room_num and (total_rooms[alt_room_num.group(1)][original_name] < MAX_ROOM or day_of_week == '토요일'):
-                                        possible_slots.append(alt_idx)
-                                        break
-                                continue
-                        
-                        if early_ok and late_ok and duty_ok and room_ok:
-                            possible_slots.append(slot_idx)
+                    if original_name not in assigned_by_original_time[time_group]:  # 동일 시간대 중복 방지
+                        possible_slots.append(slot_idx)
                 
                 if possible_slots:
                     slot_idx = random.choice(possible_slots)
                     assignment[slot_idx] = person
                     assigned_counts[person] += 1
-                    for time_group, group in time_groups.items():
-                        if slots[slot_idx] in group:
-                            assigned_by_time[time_group].add(person)
+                    time_group = next(t for t, g in time_groups.items() if slots[slot_idx] in g)
+                    assigned_by_original_time[time_group].add(original_name)
                     if slots[slot_idx] in {'8:30(1)_당직', '8:30(2)', '8:30(4)', '8:30(7)'} and day_of_week != '토요일':
                         total_early[original_name] += 1
                     if slots[slot_idx] in {'10:00(9)', '10:00(3)'} and day_of_week != '토요일':
@@ -593,7 +586,9 @@ if uploaded_file is not None:
         '10:00': ['10:00(9)', '10:00(3)'],
         '이른방': ['8:30(1)_당직', '8:30(2)', '8:30(4)', '8:30(7)'],
         '오후 당직': ['13:30(3)_당직'],
-        '오전 당직': ['8:30(1)_당직']
+        '오전 당직': ['8:30(1)_당직'],
+        '오전 안됨': ['13:30(3)_당직', '13:30(4)', '13:30(9)', '13:30(2)'],
+        '오후 안됨': ['8:30(1)_당직', '8:30(2)', '8:30(4)', '8:30(7)', '9:00(10)', '9:00(11)', '9:00(12)', '9:30(8)', '9:30(5)', '9:30(6)', '10:00(9)', '10:00(3)']
     }
 
     # total_stats 초기화
@@ -622,17 +617,48 @@ if uploaded_file is not None:
     assignments = {}
     fixed_assignments = {}
     for date in sorted(Sheet1_data.keys()):  # 날짜 정렬
-        personnel = Sheet1_data[date]['personnel']
+        personnel_sheet1 = Sheet1_data[date]['personnel']
         day_of_week = Sheet1_data[date]['day']
         memos = Sheet1_data[date]['memos']
         
+        # Sheet2 고정 배정 준비
         fixed_assignments[date] = {}
-        for person in personnel:
-            original_name = person.split('_')[0]
-            if date in Sheet2_data:
-                for p, slot in Sheet2_data[date].get('fixed_assignments', {}).items():
-                    if p == original_name and slot in time_slots:
-                        fixed_assignments[date][person] = slot
+        if date in Sheet2_data:
+            for row in Sheet2.iter_rows(min_row=2):
+                sheet2_date = row[0].value
+                if sheet2_date:
+                    if isinstance(sheet2_date, datetime):
+                        date_str = sheet2_date.strftime('%Y-%m-%d')
+                    else:
+                        date_str_raw = str(sheet2_date).strip()
+                        try:
+                            if "월" in date_str_raw and "일" in date_str_raw:
+                                month, day = date_str_raw.replace("월", "").replace("일", "").split()
+                                year = datetime.today().year
+                                date = datetime.strptime(f"{year}-{month}-{day}", "%Y-%m-%d").date()
+                                date_str = date.strftime('%Y-%m-%d')
+                            else:
+                                date = datetime.strptime(date_str_raw, '%Y-%m-%d').date()
+                                date_str = date.strftime('%Y-%m-%d')
+                        except ValueError:
+                            continue
+                    if date_str == date:
+                        headers = Sheet2_data[date]['headers']
+                        for col_idx, cell in enumerate(row[2:], 2):
+                            if cell.value:
+                                slot_key = headers[col_idx]
+                                person = cell.value
+                                name_counts = Counter([p.split('_')[0] for p in personnel_sheet1])
+                                name_counts[person] += 1
+                                suffix = f"_{name_counts[person]}" if name_counts[person] > 1 else ""
+                                fixed_person = f"{person}{suffix}"
+                                fixed_assignments[date][fixed_person] = slot_key
+
+        # Sheet1과 Sheet2 인원 통합
+        personnel = personnel_sheet1.copy()
+        for person in fixed_assignments[date].keys():
+            if person not in personnel:
+                personnel.append(person)
         
         assigned_slots = slot_mappings.get(date, weekday_slots)
         assignment, fixed_assignments_record, memo_assignments = random_assign(
