@@ -32,7 +32,7 @@ if uploaded_file is not None:
     Sheet1 = wb['Sheet1']
     Sheet2 = wb['Sheet2']
 
-    def extract_data(sheet):
+    def extract_data(sheet, is_sheet1=True):
         data = {}
         headers = [cell.value for cell in sheet[1]]
         
@@ -58,7 +58,6 @@ if uploaded_file is not None:
                     except ValueError:
                         continue
                 
-                # 중복 날짜 처리: 동일한 날짜가 있으면 스킵
                 if date_str in data:
                     continue
                 
@@ -83,18 +82,34 @@ if uploaded_file is not None:
                 
                 personnel = []
                 memo_dict = {}
-                for cell in row[2:]:
-                    if cell.value and cell.value not in ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']:
-                        personnel.append(cell.value)
-                    if cell.comment and cell.value:
-                        memo_dict[cell.value] = cell.comment.text.strip()
+                if is_sheet1:
+                    # Sheet1에서만 personnel 리스트 생성
+                    for cell in row[2:]:
+                        cell_value = cell.value
+                        if isinstance(cell_value, list):
+                            cell_value = ','.join(str(v).strip() for v in cell_value if v)
+                        if cell_value and cell_value not in ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']:
+                            values = str(cell_value).replace('/', ',').split(',')
+                            for val in values:
+                                val = val.strip()
+                                if val:
+                                    personnel.append(val)
+                        if cell.comment and cell.value:
+                            memo_dict[str(cell.value)] = cell.comment.text.strip()
 
-                personnel_with_suffix = []
-                name_counts = Counter()
-                for name in personnel:
-                    name_counts[name] += 1
-                    suffix = f"_{name_counts[name]}" if name_counts[name] > 1 else ""
-                    personnel_with_suffix.append(f"{name}{suffix}")
+                    personnel_with_suffix = []
+                    name_counts = Counter()
+                    for name in personnel:
+                        name_counts[name] += 1
+                        suffix = f"_{name_counts[name]}" if name_counts[name] > 1 else ""
+                        personnel_with_suffix.append(f"{name}{suffix}")
+                else:
+                    # Sheet2에서는 personnel 리스트를 생성하지 않음
+                    personnel_with_suffix = []
+                    personnel = []
+                    for cell in row[2:]:
+                        if cell.comment and cell.value:
+                            memo_dict[str(cell.value)] = cell.comment.text.strip()
                 
                 data[date_str] = {
                     'personnel': personnel_with_suffix, 
@@ -106,8 +121,8 @@ if uploaded_file is not None:
         
         return data
 
-    Sheet1_data = extract_data(Sheet1)
-    Sheet2_data = extract_data(Sheet2)
+    Sheet1_data = extract_data(Sheet1, is_sheet1=True)
+    Sheet2_data = extract_data(Sheet2, is_sheet1=False)
 
     if not Sheet1_data:
         st.error("Sheet1_data가 비어 있습니다. 엑셀 파일의 Sheet1에 데이터가 있는지, 형식이 맞는지 확인하세요.")
@@ -288,13 +303,27 @@ if uploaded_file is not None:
             # 고정 배치 적용 (Sheet2)
             for date, assignments in fixed_assignments.items():
                 if date == current_date:
-                    for person, fixed_slot in assignments.items():
+                    for fixed_slot, person in assignments.items():
                         if fixed_slot in slots:
                             slot_idx = slots.index(fixed_slot)
+                            # 슬롯이 이미 채워져 있는지 확인
+                            if assignment[slot_idx] is not None:
+                                st.warning(
+                                    f"DEBUG | {current_date}: {fixed_slot}에 이미 {assignment[slot_idx]}가 배정되어 있습니다. "
+                                    f"{person}은 무시됩니다."
+                                )
+                                continue
+                            if isinstance(person, list):
+                                st.error(f"❌ person이 리스트임: {person} (type: {type(person)})")
+                                continue
                             original_name = person.split('_')[0]
                             time_group = next(t for t, g in time_groups.items() if fixed_slot in g)
                             if original_name not in assigned_by_original_time[time_group]:
-                                assignment[slot_idx] = person
+                                if isinstance(person, str):
+                                    assignment[slot_idx] = person
+                                else:
+                                    st.error(f"❌ 잘못된 person 타입: {person} (type: {type(person)})")
+                                    continue
                                 fixed_personnel.add(person)
                                 assigned_counts[person] += 1
                                 fixed_assignments_record.setdefault(fixed_slot, Counter())[person] += 1
@@ -335,7 +364,11 @@ if uploaded_file is not None:
                 ]
                 if valid_slots:
                     slot_idx = random.choice(valid_slots)
-                    assignment[slot_idx] = person
+                    if isinstance(person, str):
+                        assignment[slot_idx] = person
+                    else:
+                        st.error(f"❌ 잘못된 person 타입: {person} (type: {type(person)})")
+                        continue
                     assigned_counts[person] += 1
                     memo_assignments.setdefault(slots[slot_idx], Counter())[person] += 1
                     remaining_slots.remove(slot_idx)
@@ -362,7 +395,11 @@ if uploaded_file is not None:
                     original_name = person.split('_')[0]
                     if (original_name not in assigned_by_original_time[time_group] and 
                         assigned_counts[person] < personnel_counts[person]):
-                        assignment[slot_idx] = person
+                        if isinstance(person, str):
+                            assignment[slot_idx] = person
+                        else:
+                            st.error(f"❌ 잘못된 person 타입: {person} (type: {type(person)})")
+                            continue
                         assigned_counts[person] += 1
                         assigned_by_original_time[time_group].add(original_name)
                         if day_of_week != '토요일':
@@ -384,7 +421,11 @@ if uploaded_file is not None:
                     original_name = person.split('_')[0]
                     if (original_name not in assigned_by_original_time[time_group] and 
                         assigned_counts[person] < personnel_counts[person]):
-                        assignment[slot_idx] = person
+                        if isinstance(person, str):
+                            assignment[slot_idx] = person
+                        else:
+                            st.error(f"❌ 잘못된 person 타입: {person} (type: {type(person)})")
+                            continue
                         assigned_counts[person] += 1
                         assigned_by_original_time[time_group].add(original_name)
                         if day_of_week != '토요일':
@@ -405,7 +446,11 @@ if uploaded_file is not None:
                     original_name = person.split('_')[0]
                     if (original_name not in assigned_by_original_time[time_group] and 
                         assigned_counts[person] < personnel_counts[person]):
-                        assignment[slot_idx] = person
+                        if isinstance(person, str):
+                            assignment[slot_idx] = person
+                        else:
+                            st.error(f"❌ 잘못된 person 타입: {person} (type: {type(person)})")
+                            continue
                         assigned_counts[person] += 1
                         assigned_by_original_time[time_group].add(original_name)
                         if day_of_week != '토요일':
@@ -440,7 +485,11 @@ if uploaded_file is not None:
                         original_name = person.split('_')[0]
                         if (assigned_counts[person] < personnel_counts[person] and 
                             original_name not in assigned_by_original_time[time_group]):
-                            assignment[slot_idx] = person
+                            if isinstance(person, str):
+                                assignment[slot_idx] = person
+                            else:
+                                st.error(f"❌ 잘못된 person 타입: {person} (type: {type(person)})")
+                                continue
                             assigned_counts[person] += 1
                             assigned_by_original_time[time_group].add(original_name)
                             if slots[slot_idx] in early_slots and day_of_week != '토요일':
@@ -491,30 +540,27 @@ if uploaded_file is not None:
                 if min_unassigned == 0:  # 모든 인원이 배정되면 종료
                     break
 
-        if best_assignment is not None:
-            total_stats['early'] = best_total_early
-            total_stats['late'] = best_total_late
-            total_stats['duty'] = best_total_duty
-            total_stats['slots'] = best_total_slots
-            total_stats['total'] = best_total_stats
-            # 미배정 인원이 있을 때만 경고 출력
-            if min_unassigned > 0:
-                unassigned = {p: personnel_counts[p] - Counter(best_assignment)[p] for p in personnel_counts if personnel_counts[p] > Counter(best_assignment)[p]}
-            return best_assignment, best_fixed_assignments_record, best_memo_assignments
-        
-        # 최후의 경우 (최적 결과 없음)
-        stats, early_count, late_count, duty_count, slot_counts = calculate_stats(assignment, slots, day_of_week)
-        total_stats['early'].update(early_count)
-        total_stats['late'].update(late_count)
-        total_stats['duty'].update(duty_count)
-        for slot in slot_counts:
-            total_stats['slots'][slot].update(slot_counts[slot])
-        total_stats['total'].update(stats)
-        unassigned_count = sum(personnel_counts[p] - assigned_counts[p] for p in personnel_counts if personnel_counts[p] > assigned_counts[p])
-        if unassigned_count > 0:
-            unassigned = {p: personnel_counts[p] - assigned_counts[p] for p in personnel_counts if personnel_counts[p] > assigned_counts[p]}
-            st.warning(f"{current_date}: {unassigned_count}명의 인원이 배정되지 않았습니다. 배정되지 않은 인원: {unassigned}")
-        return assignment, fixed_assignments_record, memo_assignments
+        # best_assignment가 None인 경우 처리
+        if best_assignment is None:
+            best_assignment = assignment
+            best_fixed_assignments_record = fixed_assignments_record
+            best_memo_assignments = memo_assignments
+            best_total_early = temp_total_early
+            best_total_late = temp_total_late
+            best_total_duty = temp_total_duty
+            best_total_slots = temp_total_slots
+            best_total_stats = temp_total_stats
+
+        total_stats['early'] = best_total_early
+        total_stats['late'] = best_total_late
+        total_stats['duty'] = best_total_duty
+        total_stats['slots'] = best_total_slots
+        total_stats['total'] = best_total_stats
+
+        # 미배정 인원이 있을 때만 경고 출력
+        if min_unassigned > 0:
+            unassigned = {p: personnel_counts[p] - Counter(best_assignment)[p] for p in personnel_counts if personnel_counts[p] > Counter(best_assignment)[p]}
+        return best_assignment, best_fixed_assignments_record, best_memo_assignments
         
     def assign_remaining(assignment, personnel_list, available_slots, slots, assigned_counts, personnel_counts, time_groups, assigned_by_original_time, total_early, total_late, total_duty, total_rooms, MAX_EARLY, MAX_LATE, MAX_DUTY, MAX_ROOM, day_of_week):
         random.shuffle(personnel_list)
@@ -661,14 +707,36 @@ if uploaded_file is not None:
                         for col_idx, cell in enumerate(row[2:], 2):
                             if cell.value:
                                 slot_key = headers[col_idx]
-                                # Sheet1에 해당 인원이 있는 경우에만 고정 배치 추가
-                                if date_str in Sheet1_data and cell.value in Sheet1_data[date_str]['original_personnel']:
-                                    fixed_assignments[date_str][cell.value] = slot_key
+                                cell_value = cell.value
+                                if isinstance(cell_value, list):
+                                    cell_value = ','.join(str(v).strip() for v in cell_value if v)
+                                values = str(cell_value).replace('/', ',').split(',')
+                                for val in values:
+                                    val = val.strip()
+                                    if not val:
+                                        continue
+                                    if date_str in Sheet1_data and val in Sheet1_data[date_str]['original_personnel']:
+                                        matched_person = next(
+                                            (p for p in personnel if p.split('_')[0] == val),
+                                            val
+                                        )
+                                        if isinstance(matched_person, list):
+                                            st.error(f"❌ matched_person이 리스트임: {matched_person} (date: {date_str}, slot: {slot_key})")
+                                            continue
+                                        if slot_key in fixed_assignments[date_str]:
+                                            st.warning(
+                                                f"DEBUG | {date_str}: {slot_key}에 이미 {fixed_assignments[date_str][slot_key]}가 배정되어 있습니다. "
+                                                f"{matched_person}은 무시됩니다."
+                                            )
+                                            continue
+                                        fixed_assignments[date_str][slot_key] = matched_person
 
             if personnel:
                 assignment, fixed_assignments_record, memo_assignments = random_assign(
                     personnel, slots, fixed_assignments, memos, day_of_week, time_groups, total_stats, current_date=date
                 )
+                if not isinstance(assignment, list):
+                    st.error(f"❌ assignment이 리스트가 아님: {assignment} (type: {type(assignment)})")
                 assignments[date] = assignment
                 slot_mappings[date] = slots
                 
@@ -707,6 +775,9 @@ if uploaded_file is not None:
 
         # assigned_slots와 assignment 매핑
         for slot, person in zip(assigned_slots, assignment):
+            if isinstance(person, list):
+                st.error(f"❌ person이 리스트임: {person} (slot: {slot})")
+                continue
             if person:
                 original_name = person.split('_')[0] if '_' in person else person
                 slot_to_person[slot] = original_name
